@@ -1,57 +1,68 @@
-# --- Tahap 1: Builder ---
-# Di tahap ini kita menyiapkan semua dependensi dan membangun aset.
-# Kita beri nama tahap ini "builder"
-FROM serversideup/php:8.3-fpm-nginx AS builder
+FROM composer:2.2 AS composer_base
 
-# Ganti ke user root untuk bisa install software
+# Pastikan ARG ini didefinisikan di awal Dockerfile Anda
+ARG PHP_EXTS="pdo_mysql pcntl gd zip intl exif mysqli"
+ARG PHP_PECL_EXTS="redis"
+ARG PHP_ENABLE_EXTS="exif redis intl" # Perhatikan: intl sudah diaktifkan oleh docker-php-ext-install
+
+RUN set -eux; \
+    apk add --virtual build-dependencies --no-cache ${PHPIZE_DEPS} openssl ca-certificates libxml2-dev oniguruma-dev \
+    && apk add --update --no-cache freetype-dev libjpeg-turbo-dev jpeg-dev libpng-dev libzip-dev icu-dev \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install -j$(nproc) ${PHP_EXTS} \
+    && pecl install ${PHP_PECL_EXTS} \
+    && docker-php-ext-enable ${PHP_ENABLE_EXTS} \
+    && apk del build-dependencies
+
+COPY . /var/www
+
+WORKDIR /var/www
+
+RUN composer install --optimize-autoloader --no-interaction --no-progress --prefer-dist
+
+FROM node:22-slim AS node_base
+
+COPY --from=composer_base /var/www /var/www
+
+# Set working directory
+WORKDIR /var/www
+
+# Install Node.js dependencies and build assets
+RUN npm install && npm run build
+
+FROM php:8.3.4-fpm-alpine
+
 USER root
 
-# Install Node.js dan Git (Git mungkin dibutuhkan oleh Composer)
-RUN apt-get update && apt-get install -y nodejs npm git
+RUN apk add --no-cache postgresql-dev msmtp perl wget procps shadow libzip libpng libjpeg-turbo libwebp freetype icu
 
-# Ganti ke user non-root untuk keamanan
-USER www-data
+RUN apk add --no-cache --virtual build-essentials \
+    icu-dev icu-libs zlib-dev g++ make automake autoconf libzip-dev \
+    libpng-dev libwebp-dev libjpeg-turbo-dev freetype-dev && \
+    docker-php-ext-configure gd --enable-gd --with-freetype --with-jpeg --with-webp && \
+    docker-php-ext-install gd && \
+    docker-php-ext-install pgsql && \
+    docker-php-ext-install pgsql pdo pdo_pgsql && \
+    docker-php-ext-install intl && \
+    docker-php-ext-install bcmath && \
+    docker-php-ext-install opcache && \
+    docker-php-ext-install exif && \
+    docker-php-ext-install zip && \
+    pecl install redis && \
+    docker-php-ext-enable redis && \
+    apk del build-essentials && rm -rf /usr/src/php*
 
-# Pindah ke direktori kerja
-WORKDIR /var/www/html
+RUN apk add --no-cache nginx wget
 
-# --- Optimasi Cache untuk Composer ---
-# Salin hanya file dependensi dulu. Jika file ini tidak berubah,
-# Docker akan menggunakan cache dan melewati `composer install`.
-COPY --chown=www-data:www-data composer.json composer.lock ./
-RUN composer install --no-dev --no-scripts --optimize-autoloader
+RUN mkdir -p /run/nginx
 
-# --- Optimasi Cache untuk NPM ---
-# Sama seperti composer, salin hanya file dependensi Node.js
-COPY --chown=www-data:www-data package.json package-lock.json ./
-RUN npm install
+# Define a variável de ambiente LISTEN_PORT
+ARG PORT=8000
+ENV PORT=$PORT
 
-# Sekarang, salin sisa file aplikasi
-COPY --chown=www-data:www-data . .
+COPY ops/cloudrun/nginx/nginx.conf /etc/nginx/nginx.conf
 
-# Jalankan perintah build dan optimasi Laravel
-# Kita butuh `key:generate` jika .env belum ada kuncinya.
-# Perintah optimasi ini sangat penting untuk performa di produksi.
-RUN php artisan key:generate --force \
-    && php artisan config:cache \
-    && php artisan route:cache \
-    && php artisan view:cache \
-    && npm run build
+# Copy the application code and dependencies from the build stage
+COPY --from=node_base --chown=www-data:www-data /var/www /var/www
 
-# --- Tahap 2: Production ---
-# Di tahap ini kita membangun image final yang bersih dan ringan.
-FROM serversideup/php:8.3-fpm-nginx
-
-# Ganti ke user non-root
-USER www-data
-
-# Pindah ke direktori kerja
-WORKDIR /var/www/html
-
-# Salin file yang sudah di-build dari tahap "builder"
-# Kita hanya menyalin file yang benar-benar dibutuhkan untuk production.
-# Tidak ada lagi node_modules, source code JS/CSS mentah, dll.
-COPY --from=builder /var/www/html .
-
-# Expose port 8000 (port default yang digunakan oleh base image ini)
-EXPOSE 8000
+CMD [ "sh", "/var/www/ops/cloudrun/nginx/startup.sh" ]
