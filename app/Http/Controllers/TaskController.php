@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 
 class TaskController extends Controller
@@ -14,15 +15,8 @@ class TaskController extends Controller
     {
         // Validasi limit task berdasarkan plan pengguna
         $user = auth()->user();
-        $plan = $user->plan;
 
-        if ($plan && $plan->task_limit > 0 && $user->tasks()->count() >= $plan->task_limit) {
-            return response()->json([
-                'message' => 'You have reached the maximum number of tasks allowed for your plan.'
-            ], 403); // Forbidden
-        }
-
-        $tasks = auth()->tasks()->with('subtasks')->get();
+        $tasks = $user->tasks()->get();
         return response()->json($tasks);
     }
 
@@ -44,6 +38,8 @@ class TaskController extends Controller
         $validator = Validator::make($request->all(), [
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
+            'video' => 'nullable|string',
+            'image' => 'nullable|mimes:jpeg,png,jpg,svg|max:2048',
         ]);
 
         if ($validator->fails()) {
@@ -53,9 +49,21 @@ class TaskController extends Controller
         $task = $user->tasks()->create([
             'title' => $request->title,
             'description' => $request->description,
+            'video' => $request->video ?? null,
         ]);
 
-        return response()->json($task, 201); // 201 Created
+        $image = $request->file('image');
+        if ($image) {
+            $imagePath = $user->email . '/tasks/' . $task->title;
+            Storage::disk('public')->put($imagePath, $image->getContent());
+            $imagePath = Storage::url($imagePath);
+            $task->image = $imagePath;
+            $task->save();
+        }
+
+        $data = $task;
+        $data['image'] = $task->image == null ? null : asset($task->image);
+        return response()->json($data, 201); // 201 Created
     }
 
     /**
@@ -64,7 +72,8 @@ class TaskController extends Controller
     public function show(string $id)
     {
         // Pastikan task ini milik pengguna yang login
-        $task = auth()->tasks()->findOrFail($id);
+        $user = auth()->user();
+        $task = $user->tasks()->findOrFail($id);
         if (auth()->id() !== $task->user_id) {
             return response()->json([
                 'message' => 'Unauthorized'
@@ -81,26 +90,41 @@ class TaskController extends Controller
     public function update(Request $request, string $id)
     {
         // Pastikan task ini milik pengguna yang login
-        $task = auth()->tasks()->findOrFail($id);
+        $user = auth()->user();
+        $task = $user->tasks()->findOrFail($id);
         if (auth()->id() !== $task->user_id) {
             return response()->json([
                 'message' => 'Unauthorized'
             ], 403);
         }
+        // dd($request->all());
 
         // Validasi input
         $validator = Validator::make($request->all(), [
             'title' => 'sometimes|required|string|max:255',
             'description' => 'sometimes|nullable|string',
-            'is_completed' => 'sometimes|boolean',
+            'video' => 'sometimes|nullable|string',
+            'image' => 'sometimes|nullable|mimes:jpeg,png,jpg,svg|max:2048',
         ]);
 
         if ($validator->fails()) {
             return response()->json($validator->errors(), 422);
         }
 
-        $task->update($request->validated()); // Use validated data
-        return response()->json($task);
+        $task->update($request->only(['title', 'description', 'video']));
+        $image = $request->file('image');
+        // dd($request->all());
+        if ($image) {
+            $imagePath = $user->email . '/tasks/' . $task->title;
+            Storage::disk('public')->put($imagePath, $image->getContent());
+            $imagePath = Storage::url($imagePath);
+            $task->image = $imagePath;
+            $task->save();
+        }
+
+        $data = $task;
+        $data['image'] = $task->image == null ? null : asset($task->image);
+        return response()->json($data);
     }
 
     /**
@@ -109,7 +133,8 @@ class TaskController extends Controller
     public function destroy(string $id)
     {
         // Pastikan task ini milik pengguna yang login
-        $task = auth()->tasks()->findOrFail($id);
+        $user = auth()->user();
+        $task = $user->tasks()->findOrFail($id);
         if (auth()->id() !== $task->user_id) {
             return response()->json([
                 'message' =>

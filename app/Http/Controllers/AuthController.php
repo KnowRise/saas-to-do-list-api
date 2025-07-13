@@ -19,29 +19,32 @@ class AuthController extends Controller
     public function oAuthCallback(Request $request)
     {
         $user = Socialite::driver('google')->stateless()->user();
+        // dd(['OAuth callback received' => $user]);
         $existingUser = User::where('email', $user->getEmail())->first();
         if ($existingUser) {
-            // Jika user sudah ada, login
-            auth()->login($existingUser);
             $token = $existingUser->createToken('auth_token')->plainTextToken;
+            $existingUser->update([
+                'avatar' => $user->avatar ?? $user->getAvatar()
+            ]);
             return response()->json([
                 'message' => 'Login successful',
                 'user' => $existingUser,
-                'token' => $token
+                'token' => $token,
             ]);
         } else {
-            // Jika user belum ada, buat user baru
             $freePlan = Plan::where('name', 'Free')->first();
             if (!$freePlan) {
                 return response()->json(['message' => 'Default plan not found.'], 500);
             }
+            // dd($freePlan->id);
             $newUser = User::create([
                 'name' => $user->getName(),
                 'email' => $user->getEmail(),
                 'password' => null,
-                'plan_id' => $freePlan->id, // Assign default plan
+                'plan_id' => $freePlan->id,
+                'avatar' => $user->getAvatar()
             ]);
-            auth()->login($newUser);
+
             $token = $newUser->createToken('auth_token')->plainTextToken;
             return response()->json([
                 'message' => 'User created and logged in successfully',

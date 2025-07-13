@@ -22,7 +22,8 @@ class SubtaskController extends Controller
             ], 400);
         }
 
-        $task = auth()->tasks()->findOrFail($id);
+        $user = auth()->user();
+        $task = $user->tasks()->findOrFail($id);
         if (auth()->id() !== $task->user_id) {
             return response()->json([
                 'message' => 'Unauthorized'
@@ -38,7 +39,6 @@ class SubtaskController extends Controller
      */
     public function store(Request $request)
     {
-        // Pastikan task ini milik pengguna yang login\
         $id = $request->query('task_id');
 
         if (!$id) {
@@ -47,27 +47,14 @@ class SubtaskController extends Controller
             ], 400);
         }
 
-        $task = auth()->tasks()->findOrFail($id);
+        $user = auth()->user();
+        $task = $user->tasks()->findOrFail($id);
         if (auth()->id() !== $task->user_id) {
             return response()->json([
                 'message' => 'Unauthorized'
             ], 403);
         }
 
-        // Validasi jumlah subtask
-        $user = auth()->user();
-        $plan = $user->plan;
-        $currentSubtaskCount = $task->subtasks()->count();
-        if (
-            $plan && $plan->task_limit > 0 &&
-            $currentSubtaskCount >= $plan->task_limit
-        ) { // Contoh sederhana
-            return response()->json([
-                'message' => 'You have reached the maximum number of subtasks allowed for this task plan.'
-            ], 429);
-        }
-
-        // Validasi input
         $validator = Validator::make($request->all(), [
             'title' => 'required|string|max:255',
             'description' => 'nullable|string',
@@ -79,7 +66,7 @@ class SubtaskController extends Controller
 
         $subtask = $task->subtasks()->create([
             'title' => $request->title,
-            'description' => $request->description, // 'description' bisa ditambahkan jika ada di model/migration
+            'description' => $request->description,
         ]);
 
         return response()->json($subtask, 201);
@@ -88,16 +75,17 @@ class SubtaskController extends Controller
     /**
      * Display the specified resource.
      */
-    public function show(string $id)
-    {
-        $subtask = Subtask::findOrFail($id);
-        $task = $subtask->task;
-        if (auth()->id() !== $task->user_id) {
-            return response()->json(['message' => 'Unauthorized or invalid resource'], 403);
-        }
 
-        return response()->json($subtask);
-    }
+    // public function show(string $id)
+    // {
+    //     $subtask = Subtask::findOrFail($id);
+    //     $task = $subtask->task;
+    //     if (auth()->id() !== $task->user_id) {
+    //         return response()->json(['message' => 'Unauthorized or invalid resource'], 403);
+    //     }
+
+    //     return response()->json($subtask);
+    // }
 
     /**
      * Update the specified resource in storage.
@@ -115,14 +103,39 @@ class SubtaskController extends Controller
         $validator = Validator::make($request->all(), [
             'title' => 'sometimes|required|string|max:255',
             'description' => 'sometimes|nullable|string',
-            'is_completed' => 'sometimes|boolean',
         ]);
 
         if ($validator->fails()) {
             return response()->json($validator->errors(), 422);
         }
 
-        $subtask->update($request->validated());
+        $subtask->update($request->only(['title', 'description']));
+        return response()->json($subtask);
+    }
+
+    public function changeStatus(Request $request)
+    {
+        $id = $request->query('subtask_id');
+        $subtask = Subtask::findOrFail($id);
+        $task = $subtask->task;
+
+        if (auth()->id() !== $task->user_id) {
+            return response()->json([
+                'message' => 'Unauthorized or invalid resource'
+            ], 403);
+        }
+
+        $validator = Validator::make($request->all(), [
+            'status' => 'required|in:pending,in_progress,completed',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json($validator->errors(), 422);
+        }
+
+        $subtask->status = $request->status;
+        $subtask->save();
+
         return response()->json($subtask);
     }
 

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Invoice;
+use App\Models\Order;
 use App\Models\Payment;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
@@ -30,6 +31,7 @@ class PaymentController extends Controller
             'plan_name' => $plan->name,
             'price' => $plan->price,
         ];
+
         $pdf = Pdf::loadView('pdf.invoice', $data);
         Storage::disk('public')->put("invoices/{$user->email}/{$invoiceNumber}.pdf", $pdf->output());
         $invoice = Invoice::create([
@@ -37,6 +39,7 @@ class PaymentController extends Controller
             'invoice_number' => $invoiceNumber,
             'pdf_url' => asset("storage/invoices/{$user->email}/{$invoiceNumber}.pdf"),
         ]);
+        // dd($invoice); // Debugging line to check the invoice creation
         return $invoice;
     }
 
@@ -78,8 +81,13 @@ class PaymentController extends Controller
                 return response()->json(['error' => 'Order is not in pending status'], 400);
             }
 
+            $payment = Payment::where('order_id', $order->id)->first();
+            if ($payment) {
+                return response()->json(['error' => 'Payment already exists for this order'], 400);
+            }
+
             // Simpan pembayaran
-            $payment = Payment::create([
+            $newPayment = Payment::create([
                 'order_id' => $order->id,
                 'paid_at' => now()->toDateTimeString(),
                 'transaction_status' => 'pending',
@@ -89,7 +97,7 @@ class PaymentController extends Controller
             $midtransPayload = [
                 'transaction_details' => [
                     'order_id' => $order->id . '-' . uniqid(),
-                    'gross_amount' => $payment->amount,
+                    'gross_amount' => round($order->amount),
                 ],
                 'customer_details' => [
                     'email' => $user->email,
@@ -100,7 +108,7 @@ class PaymentController extends Controller
             $snapToken = \Midtrans\Snap::getSnapToken($midtransPayload);
 
             // Simpan token (opsional)
-            $payment->update([
+            $newPayment->update([
                 'snap_token' => $snapToken,
             ]);
 
@@ -108,8 +116,7 @@ class PaymentController extends Controller
 
             return response()->json([
                 'message' => 'Payment created',
-                'payment' => $payment,
-                'snap_token' => $snapToken,
+                'payment' => $newPayment,
             ], 201);
         } catch (\Throwable $e) {
             DB::rollBack(); // ❌ Ada error, batalkan semua
@@ -150,7 +157,32 @@ class PaymentController extends Controller
     //     //
     // }
 
-    public function callback(Request $request) {
-        dd($request->all());
+    public function callback(Request $request)
+    {
+        $orderId = explode('-', $request->order_id)[0];
+        $order = Order::find($orderId);
+        // dd($order);
+        $user = $order->user;
+        $plan = $order->plan;
+
+        if ($request->transaction_status === 'settlement') {
+            $payment = Payment::where('order_id', $orderId)->first();
+            if (!$payment) {
+                return response()->json(['error' => 'Payment not found'], 404);
+            }
+
+            $payment->update([
+                'transaction_status' => 'success',
+                'paid_at' => now(),
+            ]);
+            $order->update(['status' => 'completed']);
+
+            // Generate invoice
+            $this->generateInvoice($orderId, $user, $plan);
+
+            return response()->json(['message' => 'Payment successful', 'payment' => $payment], 200);
+        } else {
+            return response()->json(['message' => 'Payment status: ' . $request->transaction_status], 200);
+        }
     }
 }

@@ -20,9 +20,7 @@ class OrderController extends Controller
         $user = auth()->user();
         $orders = Order::where('user_id', $user->id)->with('plan')->get();
 
-        return response()->json([
-            'orders' => $orders,
-        ]);
+        return response()->json($orders);
     }
 
     /**
@@ -40,16 +38,33 @@ class OrderController extends Controller
         }
 
         $plan = Plan::findOrFail($request->plan_id);
-        $order = Order::create([
+        $currentPlan = Plan::find($user->plan_id);
+        if ($plan->id == $user->plan_id) {
+            return response()->json(['message' => 'You are already on this plan']);
+        }
+
+        if ($plan->task_limit < $currentPlan->task_limit) {
+            return response()->json(['message' => 'You cannot downgrade your plan'], 403);
+        }
+
+        $order = Order::where('user_id', $user->id)
+            ->where('plan_id', $plan->id)
+            ->first();
+
+        if ($order) {
+            return response()->json(['message' => 'You already have an order for this plan'], 403);
+        }
+
+        $newOrder = Order::create([
             'user_id' => $user->id,
             'plan_id' => $plan->id,
             'status' => 'pending',
-            'invoice_number' => 'INV-' . Str::random(10),
+            'amount' => $plan->price
         ]);
 
         return response()->json([
             'message' => 'Order created successfully',
-            'order' => $order,
+            'order' => $newOrder,
         ], 201);
     }
 
@@ -62,9 +77,7 @@ class OrderController extends Controller
         $order = Order::with('plan')->findOrFail($id);
         $invoice = Invoice::where('order_id', $order->id)->first();
 
-        $data = [
-            'order' => $order,
-        ];
+        $data = [$order];
 
         if ($invoice) {
             $data['invoice'] = $invoice;
@@ -86,7 +99,12 @@ class OrderController extends Controller
      */
     public function destroy(string $id)
     {
+        $user = auth()->user();
         $order = Order::findOrFail($id);
+        if ($user->id != $order->user_id) {
+            return response()->json(['message' => 'You are not authorize to use this action'], 403);
+        }
+
         $order->delete();
 
         return response()->json([
