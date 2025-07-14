@@ -20,6 +20,20 @@ class DatabaseSeeder extends Seeder
         //     'email' => 'test@example.com',
         // ]);
 
+        User::create([
+            'name' => 'Admin',
+            'email' => 'admin@example.com',
+            'password' => bcrypt('password123'),
+            'is_admin' => true,
+        ]);
+
+        User::create([
+            'name' => 'User',
+            'email' => 'user@example.com',
+            'password' => bcrypt('password123'),
+            'is_admin' => false,
+        ]);
+
         $this->call([
             PlanSeeder::class,
         ]);
